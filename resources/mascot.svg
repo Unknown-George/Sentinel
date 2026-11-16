@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 146 112" role="img" aria-label="Sentinel black cat">
+  <path d="M49 96C32 98 30 72 42 57L39 20 58 32C63 29 75 29 79 32L98 19 93 57C103 75 101 97 84 98Z" fill="#0a0c12"/>
+  <path d="M88 92C124 107 140 77 123 64C114 58 106 65 112 70" fill="none" stroke="#0a0c12" stroke-width="10" stroke-linecap="round"/>
+  <rect x="50" y="47" width="9" height="5" rx="2" fill="#e7edf6"/>
+  <rect x="76" y="47" width="9" height="5" rx="2" fill="#e7edf6"/>
+</svg>

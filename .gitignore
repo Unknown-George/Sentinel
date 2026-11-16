@@ -1,0 +1,22 @@
+/build*/
+/dist/
+/.DS_Store
+/.qt/
+/.qt-sdk/
+/.venv/
+/.cache/
+*.user
+*.dSYM/
+*.sqlite*
+*.zip
+*.dmg
+
+# Local QA captures may contain usernames, hostnames, paths, or security settings.
+# Publish the aggregate dashboard, CPU, memory, and GPU showcase images only.
+/docs/screenshots/processes.png
+/docs/screenshots/network.png
+/docs/screenshots/storage.png
+/docs/screenshots/security.png
+/docs/screenshots/system.png
+/docs/screenshots/settings.png
+/docs/screenshots/smoke-report.json

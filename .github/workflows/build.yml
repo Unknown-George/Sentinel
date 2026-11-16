@@ -1,0 +1,53 @@
+name: Build and test
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  macos-arm64:
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install build dependencies
+        run: brew install cmake ninja googletest
+      - name: Install compatible Qt SDK
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.8.3'
+          host: mac
+          target: desktop
+          arch: clang_64
+          archives: 'qtbase qtsvg'
+          cache: true
+      - name: Configure ARM64 Release
+        run: >-
+          cmake -S . -B build -G Ninja
+          -DCMAKE_BUILD_TYPE=Release
+          -DCMAKE_OSX_ARCHITECTURES=arm64
+          -DCMAKE_OSX_DEPLOYMENT_TARGET=14.0
+          -DCMAKE_PREFIX_PATH="$QT_ROOT_DIR;$(brew --prefix googletest)"
+          -DSENTINEL_BUILD_TESTS=ON
+      - name: Build
+        run: cmake --build build --parallel 3
+      - name: Unit tests
+        run: ctest --test-dir build --output-on-failure
+      - name: Offscreen live smoke test
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: build/Sentinel.app/Contents/MacOS/Sentinel --smoke-test
+      - name: Package unsigned distribution
+        run: QT_PREFIX="$QT_ROOT_DIR" bash scripts/package.sh build dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Sentinel-macOS-arm64
+          path: |
+            dist/*.zip
+            dist/*.sha256
+          if-no-files-found: error
+          retention-days: 14
