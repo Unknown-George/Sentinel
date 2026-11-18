@@ -1,16 +1,20 @@
 #include "ui/MainWindow.h"
 #include "core/MonitorService.h"
+#include "ui/CatWidget.h"
+#include "ui/HistoryChart.h"
+#include "ui/ProcessModel.h"
 
-#include <QAbstractTableModel>
 #include <QApplication>
 #include <QCheckBox>
 #include <QComboBox>
 #include <QDateTime>
 #include <QDesktopServices>
-#include <QDialog>
-#include <QDialogButtonBox>
 #include <QFrame>
+#include <QEvent>
 #include <QGridLayout>
+#include <QGraphicsOpacityEffect>
+#include <QPropertyAnimation>
+#include <QShortcut>
 #include <QHeaderView>
 #include <QLabel>
 #include <QLineEdit>
@@ -20,25 +24,23 @@
 #include <QProgressBar>
 #include <QPushButton>
 #include <QScrollArea>
+#include <QScrollBar>
 #include <QSettings>
-#include <QSortFilterProxyModel>
 #include <QSplitter>
 #include <QStackedWidget>
 #include <QStandardPaths>
+#include <QUrl>
+#include <QSysInfo>
 #include <QTableView>
 #include <QTableWidget>
 #include <QTextEdit>
 #include <QTimer>
-#include <QUrl>
 #include <QVBoxLayout>
 #include <algorithm>
-#include <cmath>
-#include <functional>
-#include <limits>
 
 namespace sentinel {
 namespace {
-const QColor blue("#8698ff"), teal("#67cdb3"), muted("#838b9f"), border("#2b2e3a");
+const QColor blue("#9aa9ff");
 QString bytes(quint64 n) {
     static const char* units[] = {"B", "KiB", "MiB", "GiB", "TiB"};
     double v = double(n);
@@ -78,7 +80,7 @@ QFrame* panel() {
 QVBoxLayout* column(QWidget* w, int margin = 20) {
     auto* l = new QVBoxLayout(w);
     l->setContentsMargins(margin, margin, margin, margin);
-    l->setSpacing(14);
+    l->setSpacing(18);
     return l;
 }
 QWidget* line() {
@@ -171,288 +173,6 @@ QIcon icon(int type, bool active = false) {
     }
     return QIcon(pm);
 }
-class CatWidget final : public QWidget {
-  public:
-    explicit CatWidget(bool small = false) : small_(small) {
-        setFixedSize(small ? QSize(32, 36) : QSize(146, 112));
-        setAttribute(Qt::WA_Hover);
-        setMouseTracking(true);
-        setAccessibleName("Sentinel black cat mascot");
-        timer_.setInterval(80);
-        connect(&timer_, &QTimer::timeout, this, [this] {
-            ++tick_;
-            const double target = hover_ ? 1.0 : 0.0;
-            eyeOffset_ += (target - eyeOffset_) * 0.45;
-            if (std::abs(target - eyeOffset_) < 0.005)
-                eyeOffset_ = target;
-            if (isVisible())
-                update();
-        });
-        timer_.start();
-    }
-    void setMotion(bool on) {
-        motion_ = on;
-        if (on)
-            timer_.start();
-        else {
-            timer_.stop();
-            eyeOffset_ = 0.0;
-        }
-        update();
-    }
-
-  protected:
-    void enterEvent(QEnterEvent* e) override {
-        hover_ = true;
-        update();
-        QWidget::enterEvent(e);
-    }
-    void leaveEvent(QEvent* e) override {
-        hover_ = false;
-        update();
-        QWidget::leaveEvent(e);
-    }
-    void paintEvent(QPaintEvent*) override {
-        QPainter p(this);
-        p.setRenderHint(QPainter::Antialiasing);
-        p.scale(width() / 146., height() / 112.);
-        if (small_) {
-            p.translate(-14, -8);
-            p.scale(1.18, 1.18);
-        }
-        p.setPen(Qt::NoPen);
-        p.setBrush(QColor("#0a0c12"));
-        QPainterPath body;
-        body.moveTo(49, 96);
-        body.cubicTo(32, 98, 30, 72, 42, 57);
-        body.lineTo(39, 20);
-        body.lineTo(58, 32);
-        body.cubicTo(63, 29, 75, 29, 79, 32);
-        body.lineTo(98, 19);
-        body.lineTo(93, 57);
-        body.cubicTo(103, 75, 101, 97, 84, 98);
-        body.closeSubpath();
-        p.drawPath(body);
-        QPainterPath tail;
-        tail.moveTo(88, 92);
-        double shift = motion_ ? std::sin(tick_ * .045) * 3 : 0;
-        tail.cubicTo(124, 107, 140 + shift, 77, 123 + shift, 64);
-        tail.cubicTo(114 + shift, 58, 106 + shift, 65, 112 + shift, 70);
-        p.setPen(QPen(QColor("#0a0c12"), 10, Qt::SolidLine, Qt::RoundCap));
-        p.setBrush(Qt::NoBrush);
-        p.drawPath(tail);
-        p.setPen(Qt::NoPen);
-        p.setBrush(QColor("#e7edf6"));
-        bool blink = motion_ && (tick_ % 91 < 2);
-        double dy = -eyeOffset_, dx = 2.0 * eyeOffset_;
-        p.drawRoundedRect(QRectF(50 + dx, 47 + dy, 9, blink ? 1 : 5), 2, 2);
-        p.drawRoundedRect(QRectF(76 + dx, 47 + dy, 9, blink ? 1 : 5), 2, 2);
-    }
-
-  private:
-    bool small_ = false, motion_ = true, hover_ = false;
-    int tick_ = 30;
-    double eyeOffset_ = 0.0;
-    QTimer timer_;
-};
-class HistoryChart final : public QWidget {
-  public:
-    enum Mode { Cpu, Memory, Network, Disk };
-    explicit HistoryChart(Mode mode, QWidget* parent = nullptr) : QWidget(parent), mode_(mode) {
-        setMinimumHeight(174);
-        setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
-    }
-    void setPoints(const QVector<HistoryPoint>& points, int range) {
-        points_ = points;
-        range_ = range;
-        update();
-    }
-
-  protected:
-    void paintEvent(QPaintEvent*) override {
-        QPainter p(this);
-        p.setRenderHint(QPainter::Antialiasing);
-        const QRectF plot(4, 12, std::max(1, width() - (mode_ == Network ? 90 : 65)),
-                          std::max(1, height() - 43));
-        auto value = [this](const HistoryPoint& h, bool second) -> std::optional<double> {
-            switch (mode_) {
-            case Cpu:
-                return h.cpuPercent;
-            case Memory:
-                return h.memoryTotal ? std::optional<double>(100. * h.memoryUsed / h.memoryTotal)
-                                     : std::nullopt;
-            case Network:
-                return second ? h.uploadBytesPerSec : h.downloadBytesPerSec;
-            case Disk:
-                return h.diskTotal ? std::optional<double>(100. * h.diskUsed / h.diskTotal) : std::nullopt;
-            }
-            return std::nullopt;
-        };
-        const qint64 end = QDateTime::currentMSecsSinceEpoch(), start = end - qint64(range_) * 1000;
-        double max = 100.;
-        bool has = false;
-        if (mode_ == Network) {
-            max = 1024.;
-            for (const auto& h : points_)
-                if (h.timestampMs >= start) {
-                    if (h.downloadBytesPerSec)
-                        max = std::max(max, *h.downloadBytesPerSec * 1.15);
-                    if (h.uploadBytesPerSec)
-                        max = std::max(max, *h.uploadBytesPerSec * 1.15);
-                }
-        }
-        p.setFont(QFont(".AppleSystemUIFont", 10));
-        for (int i = 0; i <= 4; ++i) {
-            double y = plot.top() + plot.height() * i / 4.;
-            p.setPen(QPen(QColor("#2a2d39"), 1, Qt::DashLine));
-            p.drawLine(QPointF(plot.left(), y), QPointF(plot.right(), y));
-            p.setPen(muted);
-            QString label = mode_ == Network ? rate(max * (4 - i) / 4.)
-                                             : QString::number(max * (4 - i) / 4., 'f', 0) + "%";
-            p.drawText(QRectF(plot.right() + 7, y - 8, 82, 16), Qt::AlignVCenter, label);
-        }
-        for (int series = 0; series < (mode_ == Network ? 2 : 1); ++series) {
-            QPainterPath path;
-            bool connected = false;
-            int segments = 0;
-            qint64 previous = 0;
-            qint64 previousBucketWidth = 0;
-            for (const auto& h : points_) {
-                if (h.timestampMs < start || h.timestampMs > end)
-                    continue;
-                auto v = value(h, series == 1);
-                if (!v) {
-                    connected = false;
-                    continue;
-                }
-                has = true;
-                QPointF point(plot.left() + double(h.timestampMs - start) / (end - start) * plot.width(),
-                              plot.bottom() - std::clamp(*v / max, 0., 1.) * plot.height());
-                const qint64 gapLimit =
-                    std::max<qint64>(15000, 2 * std::max(previousBucketWidth, h.bucketWidthMs));
-                if (!connected || h.timestampMs - previous > gapLimit) {
-                    path.moveTo(point);
-                    ++segments;
-                } else
-                    path.lineTo(point);
-                connected = true;
-                previous = h.timestampMs;
-                previousBucketWidth = h.bucketWidthMs;
-            }
-            const QColor color = series ? teal : blue;
-            // Never shade across missing samples or sleep/restart gaps.
-            if (mode_ != Network && segments == 1 && !path.isEmpty()) {
-                QPainterPath fill = path;
-                fill.lineTo(path.currentPosition().x(), plot.bottom());
-                fill.lineTo(path.elementAt(0).x, plot.bottom());
-                fill.closeSubpath();
-                QLinearGradient g(0, plot.top(), 0, plot.bottom());
-                auto a = color;
-                a.setAlpha(45);
-                g.setColorAt(0, a);
-                a.setAlpha(0);
-                g.setColorAt(1, a);
-                p.fillPath(fill, g);
-            }
-            p.setPen(QPen(color, 2., Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
-            p.drawPath(path);
-        }
-        p.setPen(muted);
-        for (int i = 0; i <= 3; ++i) {
-            qint64 ts = start + (end - start) * i / 3;
-            const QString s =
-                QDateTime::fromMSecsSinceEpoch(ts).toString(range_ > 3600 ? "HH:mm" : "HH:mm:ss");
-            double tickX = plot.left() + plot.width() * i / 3. - 35;
-            if (i == 0)
-                tickX = plot.left();
-            else if (i == 3)
-                tickX = plot.right() - 70;
-            p.drawText(QRectF(tickX, plot.bottom() + 10, 70, 20),
-                       i == 0   ? Qt::AlignLeft
-                       : i == 3 ? Qt::AlignRight
-                                : Qt::AlignHCenter,
-                       s);
-        }
-        if (!has) {
-            p.setPen(QColor("#a2a9bb"));
-            p.drawText(plot, Qt::AlignCenter, "Waiting for measurements");
-        }
-    }
-
-  private:
-    Mode mode_;
-    QVector<HistoryPoint> points_;
-    int range_ = 300;
-};
-class ProcessModel final : public QAbstractTableModel {
-  public:
-    explicit ProcessModel(QObject* p) : QAbstractTableModel(p) {}
-    int rowCount(const QModelIndex& p = {}) const override { return p.isValid() ? 0 : items.size(); }
-    int columnCount(const QModelIndex& p = {}) const override { return p.isValid() ? 0 : 5; }
-    QVariant headerData(int s, Qt::Orientation o, int role) const override {
-        if (o == Qt::Horizontal && role == Qt::DisplayRole)
-            return QStringList{"Process", "PID", "CPU %", "Memory", "User"}.value(s);
-        return {};
-    }
-    QVariant data(const QModelIndex& index, int role) const override {
-        if (!index.isValid() || index.row() >= items.size())
-            return {};
-        const auto& item = items[index.row()];
-        int c = index.column();
-        if (role == Qt::TextAlignmentRole)
-            return int(c > 0 && c < 4 ? Qt::AlignRight | Qt::AlignVCenter : Qt::AlignLeft | Qt::AlignVCenter);
-        if (role == Qt::UserRole) {
-            switch (c) {
-            case 0:
-                return item.name;
-            case 1:
-                return item.pid;
-            case 2:
-                return item.cpuPercent ? *item.cpuPercent : -1.;
-            case 3:
-                return QVariant::fromValue(item.residentBytes);
-            case 4:
-                return item.user;
-            }
-        }
-        if (role == Qt::ToolTipRole)
-            return item.path;
-        if (role != Qt::DisplayRole)
-            return {};
-        switch (c) {
-        case 0:
-            return item.name;
-        case 1:
-            return item.pid;
-        case 2:
-            return percent(item.cpuPercent);
-        case 3:
-            return bytes(item.residentBytes);
-        case 4:
-            return item.user;
-        }
-        return {};
-    }
-    void replace(QVector<Process> p) {
-        beginResetModel();
-        items = std::move(p);
-        endResetModel();
-    }
-    QVector<Process> items;
-};
-class ProcessFilter final : public QSortFilterProxyModel {
-  public:
-    using QSortFilterProxyModel::QSortFilterProxyModel;
-
-  protected:
-    bool filterAcceptsRow(int row, const QModelIndex& parent) const override {
-        auto regex = filterRegularExpression();
-        for (int c : {0, 1, 4})
-            if (sourceModel()->index(row, c, parent).data().toString().contains(regex))
-                return true;
-        return false;
-    }
-};
 QTableWidget* table(const QStringList& headers) {
     auto* t = new QTableWidget(0, headers.size());
     t->setHorizontalHeaderLabels(headers);
@@ -460,9 +180,11 @@ QTableWidget* table(const QStringList& headers) {
     t->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
     t->setEditTriggers(QAbstractItemView::NoEditTriggers);
     t->setSelectionBehavior(QAbstractItemView::SelectRows);
-    t->setAlternatingRowColors(false);
+    t->setAlternatingRowColors(true);
+    t->setVerticalScrollMode(QAbstractItemView::ScrollPerPixel);
+    t->horizontalHeader()->setDefaultAlignment(Qt::AlignLeft | Qt::AlignVCenter);
     t->setShowGrid(false);
-    t->verticalHeader()->setDefaultSectionSize(37);
+    t->verticalHeader()->setDefaultSectionSize(42);
     return t;
 }
 void tableRow(QTableWidget* table, int row, const QStringList& values) {
@@ -472,8 +194,10 @@ void tableRow(QTableWidget* table, int row, const QStringList& values) {
             item = new QTableWidgetItem;
             table->setItem(row, col, item);
         }
-        item->setText(values[col]);
-        item->setToolTip(values[col]);
+        if (item->text() != values[col]) {
+            item->setText(values[col]);
+            item->setToolTip(values[col]);
+        }
     }
 }
 } // namespace
@@ -490,14 +214,19 @@ struct MainWindow::Impl {
     QString historyError;
     QVector<QPushButton*> nav;
     QHash<QString, QLabel*> labels;
+    QHash<QString, QProgressBar*> meters;
     QVector<HistoryChart*> charts;
     QVector<CatWidget*> cats;
     QComboBox* rangeChoice = nullptr;
+    QGridLayout* dashboardMetrics = nullptr;
+    QVector<QWidget*> dashboardCards;
+    int dashboardColumns = 0;
+    QPropertyAnimation* transition = nullptr;
+    QLineEdit* processSearch = nullptr;
+    QPushButton *signatureButton = nullptr, *socketsButton = nullptr;
     QVector<HistoryPoint> history;
-    Snapshot snapshot;
     SystemInfo info;
     int range = 300;
-    bool haveSnapshot = false;
     int sampleCount = 0;
     ProcessModel* processModel = nullptr;
     ProcessFilter* proxy = nullptr;
@@ -509,6 +238,7 @@ struct MainWindow::Impl {
     QString selectedPath;
     QTableWidget *interfaces = nullptr, *volumes = nullptr, *connections = nullptr;
     QLabel* connectionNote = nullptr;
+    QPushButton* securityRefresh = nullptr;
     QVector<QProgressBar*> coreBars;
     QGridLayout* coresGrid = nullptr;
     QWidget* coresHost = nullptr;
@@ -522,24 +252,45 @@ struct MainWindow::Impl {
         return l;
     }
     void set(const QString& key, const QString& str) {
-        if (labels.contains(key))
+        if (labels.contains(key) && labels[key]->text() != str)
             labels[key]->setText(str);
     }
     QFrame* metric(const QString& key, const QString& name, const QString& hint, int glyph = 0) {
         auto* f = panel();
+        f->setProperty("metric", true);
+        f->setAccessibleName(name);
         auto* l = column(f, 18);
+        l->setSpacing(10);
         auto* top = new QHBoxLayout;
         auto* label = text(name, "eyebrow");
-        top->addWidget(label);
-        top->addStretch();
+        label->setWordWrap(true);
+        top->addWidget(label, 1);
         auto* i = text("");
+        i->setObjectName("metricIcon");
+        i->setFixedSize(30, 30);
+        i->setAlignment(Qt::AlignCenter);
         i->setPixmap(icon(glyph, true).pixmap(18, 18));
         top->addWidget(i);
         l->addLayout(top);
         l->addWidget(value(key));
         auto* hintLabel = value(key + "Hint", hint, "note");
         hintLabel->setWordWrap(true);
+        hintLabel->setMinimumHeight(16);
         l->addWidget(hintLabel);
+        if (key == "dashCpu" || key == "dashMemory" || key == "dashDisk") {
+            auto* meter = new QProgressBar;
+            meter->setObjectName("meter");
+            meter->setProperty("tone", key == "dashMemory" ? "teal" : key == "dashDisk" ? "gold" : "blue");
+            meter->setRange(0, 1000);
+            meter->setTextVisible(false);
+            meter->setFixedHeight(4);
+            meters.insert(key, meter);
+            l->addWidget(meter);
+        } else if (key == "dashDownload") {
+            auto* divider = line();
+            divider->setFixedHeight(4);
+            l->addWidget(divider);
+        }
         return f;
     }
     QWidget* page() {
@@ -549,7 +300,7 @@ struct MainWindow::Impl {
         scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
         auto* body = new QWidget;
         body->setObjectName("pageBody");
-        column(body, 0);
+        column(body, 0)->setContentsMargins(0, 4, 10, 8);
         scroll->setWidget(body);
         stack->addWidget(scroll);
         return body;
@@ -561,10 +312,15 @@ struct MainWindow::Impl {
         auto* h = new QHBoxLayout;
         h->addWidget(text(heading, "sectionTitle"));
         h->addStretch();
-        h->addWidget(
-            text(mode == HistoryChart::Network ? "↓ Download   ↑ Upload" : "MEASURED ACTIVITY", "eyebrow"));
+        auto* legend = text(mode == HistoryChart::Network
+                                ? "<span style='color:#65d9c0'>↓ Download</span> &nbsp; <span style='color:#9aa9ff'>↑ Upload</span>"
+                                : "●  " + QString(mode == HistoryChart::Cpu ? "CPU" : mode == HistoryChart::Memory ? "MEMORY" : "STORAGE"),
+                            "chartLegend");
+        legend->setStyleSheet(QString("color:%1;").arg(mode == HistoryChart::Memory ? "#65d9c0" : mode == HistoryChart::Disk ? "#edc489" : "#9aa9ff"));
+        h->addWidget(legend);
         l->addLayout(h);
         auto* c = new HistoryChart(mode);
+        l->setSpacing(12);
         c->setMinimumHeight(min);
         l->addWidget(c);
         charts.append(c);
@@ -582,18 +338,32 @@ struct MainWindow::Impl {
     void buildDashboard() {
         auto* p = page();
         auto* l = layout(p);
-        auto* metrics = new QGridLayout;
-        metrics->setSpacing(14);
-        metrics->addWidget(metric("dashCpu", "CPU", "Measuring activity", 1), 0, 0);
-        metrics->addWidget(metric("dashMemory", "MEMORY", "Physical memory", 2), 0, 1);
-        metrics->addWidget(metric("dashDownload", "DOWNLOAD", "Physical Ethernet / Wi-Fi", 5), 0, 2);
-        metrics->addWidget(metric("dashDisk", "STORAGE", "Startup volume", 6), 0, 3);
-        l->addLayout(metrics);
+        auto* welcome = panel();
+        welcome->setObjectName("welcome");
+        auto* wl = new QHBoxLayout(welcome);
+        wl->setContentsMargins(22, 14, 22, 14);
+        auto* identity = new QVBoxLayout;
+        identity->setSpacing(6);
+        identity->addWidget(text("ON-DEVICE MONITORING", "eyebrow"));
+        identity->addWidget(value("dashModel", "Your Mac, at a glance.", "welcomeTitle"));
+        identity->addWidget(value("dashSystem", "Connecting to your system…", "note"));
+        wl->addLayout(identity, 1);
+        auto* status = text("●  LOCAL & PRIVATE", "privateBadge");
+        wl->addWidget(status, 0, Qt::AlignVCenter);
+        l->addWidget(welcome);
+        dashboardMetrics = new QGridLayout;
+        dashboardMetrics->setSpacing(16);
+        dashboardCards = {metric("dashCpu", "PROCESSOR", "Measuring activity", 1),
+                          metric("dashMemory", "MEMORY", "Physical memory", 2),
+                          metric("dashDownload", "NETWORK", "Physical Ethernet / Wi-Fi", 5),
+                          metric("dashDisk", "STORAGE", "Startup volume", 6)};
+        l->addLayout(dashboardMetrics);
         auto* hero = new QHBoxLayout;
-        hero->setSpacing(14);
-        hero->addWidget(chartPanel("CPU activity", HistoryChart::Cpu, 220), 3);
+        hero->setSpacing(18);
+        hero->addWidget(chartPanel("CPU activity", HistoryChart::Cpu, 176), 3);
         auto* glance = panel();
         auto* gl = column(glance);
+        gl->setSpacing(12);
         gl->addWidget(text("At a glance", "sectionTitle"));
         rows(gl, {{"Memory pressure", "dashPressure"},
                   {"Upload", "dashUpload"},
@@ -606,21 +376,24 @@ struct MainWindow::Impl {
         hero->addWidget(glance, 2);
         l->addLayout(hero);
         auto* lower = new QHBoxLayout;
-        lower->setSpacing(14);
-        lower->addWidget(chartPanel("Memory footprint", HistoryChart::Memory, 130));
+        lower->setSpacing(18);
+        lower->addWidget(chartPanel("Memory footprint", HistoryChart::Memory, 114));
         auto* insight = panel();
         auto* il = column(insight);
+        il->setSpacing(12);
         auto* it = new QHBoxLayout;
         it->addWidget(text("System observations", "sectionTitle"));
         it->addStretch();
         it->addWidget(text("LIVE", "badge"));
         il->addLayout(it);
         il->addWidget(value("observation", "Collecting the first system sample…", "observation"));
+        labels["observation"]->setWordWrap(true);
         il->addWidget(
             value("observationDetail", "Resource status will appear after measurements arrive.", "note"));
         labels["observationDetail"]->setWordWrap(true);
         il->addStretch();
-        auto* b = new QPushButton("Open Security Center  →");
+        auto* b = new QPushButton("Review security settings  →");
+        b->setObjectName("primary");
         connect(b, &QPushButton::clicked, window, [this] { select(7); });
         il->addWidget(b);
         lower->addWidget(insight);
@@ -710,16 +483,27 @@ struct MainWindow::Impl {
         if (indices.isEmpty()) {
             selectedPid = 0;
             selectedPath.clear();
+            if (signatureButton)
+                signatureButton->setEnabled(false);
+            if (socketsButton)
+                socketsButton->setEnabled(false);
             detail->setPlainText("Select a process to inspect its details. Protected processes may expose "
                                  "only limited information.");
             return;
         }
         auto source = proxy->mapToSource(indices.front());
-        if (source.row() >= processModel->items.size())
+        if (!source.isValid() || source.row() < 0 || source.row() >= processModel->items.size())
             return;
         const auto& p = processModel->items[source.row()];
+        const bool sameProcess = selectedPid == p.pid;
         selectedPid = p.pid;
         selectedPath = p.path;
+        signatureButton->setEnabled(!selectedPath.isEmpty());
+        socketsButton->setEnabled(selectedPid > 0);
+        // Let the user copy inspector text without a live sample clearing selection.
+        if (sameProcess && detail->textCursor().hasSelection())
+            return;
+        const int scroll = detail->verticalScrollBar()->value();
         detail->setPlainText(
             QString("%1\n\nPID  %2    •    User  %3\nCPU  %4    •    Resident memory  %5\n\n%6")
                 .arg(p.name)
@@ -727,12 +511,18 @@ struct MainWindow::Impl {
                 .arg(p.user, percent(p.cpuPercent), bytes(p.residentBytes),
                      p.path.isEmpty() ? "Executable path unavailable (process exited or access restricted)."
                                       : p.path));
+        if (sameProcess)
+            detail->verticalScrollBar()->setValue(scroll);
+    }
+    void updateProcessCount() {
+        processCount->setText(QString("%1 of %2 processes").arg(proxy->rowCount()).arg(processModel->rowCount()));
     }
     void buildProcesses() {
         auto* p = page();
         auto* l = layout(p);
         auto* toolbar = new QHBoxLayout;
         auto* search = new QLineEdit;
+        processSearch = search;
         search->setPlaceholderText("Search process name, PID, or user…");
         search->setClearButtonEnabled(true);
         search->setAccessibleName("Search processes");
@@ -746,7 +536,10 @@ struct MainWindow::Impl {
         proxy->setSortRole(Qt::UserRole);
         proxy->setFilterCaseSensitivity(Qt::CaseInsensitive);
         connect(search, &QLineEdit::textChanged, window,
-                [this](const QString& q) { proxy->setFilterFixedString(q); });
+                [this](const QString& q) {
+                    proxy->setFilterFixedString(q);
+                    updateProcessCount();
+                });
         processTable = new QTableView;
         processTable->setObjectName("processTable");
         processTable->setModel(proxy);
@@ -755,12 +548,17 @@ struct MainWindow::Impl {
         processTable->setSelectionBehavior(QAbstractItemView::SelectRows);
         processTable->setSelectionMode(QAbstractItemView::SingleSelection);
         processTable->setShowGrid(false);
+        processTable->setAlternatingRowColors(true);
+        processTable->setVerticalScrollMode(QAbstractItemView::ScrollPerPixel);
+        processTable->setAccessibleName("Live processes");
         processTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
         processTable->verticalHeader()->hide();
-        processTable->verticalHeader()->setDefaultSectionSize(37);
+        processTable->verticalHeader()->setDefaultSectionSize(42);
         processTable->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Stretch);
-        for (int c = 1; c < 5; ++c)
-            processTable->horizontalHeader()->setSectionResizeMode(c, QHeaderView::ResizeToContents);
+        for (int c = 1; c < 5; ++c) {
+            processTable->horizontalHeader()->setSectionResizeMode(c, QHeaderView::Interactive);
+            processTable->setColumnWidth(c, c == 4 ? 130 : 95);
+        }
         processTable->setMinimumHeight(330);
         l->addWidget(processTable, 1);
         connect(processTable->selectionModel(), &QItemSelectionModel::selectionChanged, window,
@@ -778,6 +576,10 @@ struct MainWindow::Impl {
         auto* actions = new QHBoxLayout;
         auto* signature = new QPushButton("Inspect code signature");
         auto* sockets = new QPushButton("View network connections");
+        signatureButton = signature;
+        socketsButton = sockets;
+        signature->setEnabled(false);
+        sockets->setEnabled(false);
         actions->addWidget(signature);
         actions->addWidget(sockets);
         actions->addStretch();
@@ -864,8 +666,11 @@ struct MainWindow::Impl {
         h->addWidget(note("Visibility into the security configuration of this Mac. Checks are read-only."),
                      1);
         auto* refresh = new QPushButton("Refresh checks");
+        securityRefresh = refresh;
         h->addWidget(refresh);
         connect(refresh, &QPushButton::clicked, window, [this] {
+            securityRefresh->setEnabled(false);
+            securityRefresh->setText("Checking…");
             for (auto* status : securityStatuses)
                 status->setText("Checking…");
             service->requestSecurity();
@@ -957,17 +762,16 @@ struct MainWindow::Impl {
             service->setRetention(days);
         });
         fl->addWidget(line());
-        auto* motion = new QCheckBox("Animate the Sentinel cat");
+        auto* motion = new QCheckBox("Smooth charts, page transitions, and mascot animation");
         motionEnabled = settings.value("animateMascot", true).toBool();
         motion->setChecked(motionEnabled);
         fl->addWidget(motion);
-        fl->addWidget(note("Animations also respect the macOS Reduce Motion preference. Monitoring graphs "
-                           "update only when a new measurement arrives."));
+        fl->addWidget(note("Animation also respects Reduce Motion in macOS Accessibility settings."));
+
         connect(motion, &QCheckBox::toggled, window, [this](bool b) {
             motionEnabled = b;
             settings.setValue("animateMascot", b);
-            for (auto* cat : cats)
-                cat->setMotion(b && !info.reducedMotion);
+            applyMotion();
         });
         l->addWidget(f);
         auto* historyPanel = panel();
@@ -999,7 +803,8 @@ struct MainWindow::Impl {
         });
         hl->addLayout(buttons);
         l->addWidget(historyPanel);
-        l->addWidget(note("Sentinel 1.0 • C++20 / Qt 6 • Designed for Apple Silicon and macOS 14 or later."));
+        l->addWidget(note(QString("Sentinel %1 • C++20 / Qt 6 • Designed for Apple Silicon and macOS 14 or later.")
+                              .arg(QCoreApplication::applicationVersion())));
         l->addStretch();
     }
     void adjustSidebar(int height) {
@@ -1011,16 +816,64 @@ struct MainWindow::Impl {
             button->setFixedHeight(compact ? 34 : 40);
         brandCaption->setVisible(height >= 740);
         catCaption->setVisible(height >= 820);
-        sidebarCat->setVisible(height >= 740);
+        sidebarCat->setVisible(height >= 800);
         sidebarCat->setFixedSize(height < 820 ? QSize(91, 70) : QSize(146, 112));
-        for (auto* label : labels)
-            if (label->objectName() == "value")
-                label->setStyleSheet(window->width() < 1150 ? "font-size:24px;" : "font-size:30px;");
+        if (dashboardMetrics) {
+            const int count = stack->width() < 900 ? 2 : 4;
+            if (dashboardColumns != count) {
+                dashboardColumns = count;
+                for (auto* card : dashboardCards)
+                    dashboardMetrics->removeWidget(card);
+                for (int i = 0; i < dashboardCards.size(); ++i)
+                    dashboardMetrics->addWidget(dashboardCards[i], i / count, i % count);
+                for (int i = 0; i < 4; ++i)
+                    dashboardMetrics->setColumnStretch(i, i < count ? 1 : 0);
+            }
+        }
+    }
+    void applyMotion() {
+        const bool enabled = motionEnabled && !info.reducedMotion;
+        for (auto* cat : cats)
+            cat->setMotion(enabled);
+        for (auto* chart : charts)
+            chart->setMotion(enabled);
+        if (!enabled && transition) {
+            transition->stop();
+            transition->deleteLater();
+            transition = nullptr;
+            stack->setGraphicsEffect(nullptr);
+        }
+    }
+    void animatePage() {
+        if (transition) {
+            transition->stop();
+            transition->deleteLater();
+            transition = nullptr;
+            stack->setGraphicsEffect(nullptr);
+        }
+        if (!motionEnabled || info.reducedMotion || !window->isVisible())
+            return;
+        auto* opacity = new QGraphicsOpacityEffect(stack);
+        stack->setGraphicsEffect(opacity);
+        transition = new QPropertyAnimation(opacity, "opacity", stack);
+        transition->setDuration(120);
+        transition->setStartValue(0.72);
+        transition->setEndValue(1.0);
+        transition->setEasingCurve(QEasingCurve::OutCubic);
+        connect(transition, &QPropertyAnimation::finished, window, [this] {
+            transition->deleteLater();
+            transition = nullptr;
+            stack->setGraphicsEffect(nullptr);
+        });
+        transition->start();
     }
     void select(int i) {
         if (i < 0 || i >= stack->count())
             return;
+        const bool changed = stack->currentIndex() != i;
         stack->setCurrentIndex(i);
+        if (changed)
+            animatePage();
         for (int j = 0; j < nav.size(); ++j) {
             nav[j]->setChecked(j == i);
             nav[j]->setIcon(icon(j, j == i));
@@ -1040,19 +893,20 @@ struct MainWindow::Impl {
                                  "Make Sentinel feel at home."};
         title->setText(names[i]);
         subtitle->setText(sub[i]);
-        rangeChoice->setVisible(i <= 3 || i == 5 || i == 6);
-        if (i == 7)
-            service->requestSecurity();
+        rangeChoice->setVisible(i <= 2 || i == 5 || i == 6);
+        updateCharts();
     }
     void updateCharts() {
         for (auto* c : charts)
-            c->setPoints(history, range);
+            if (c->isVisible())
+                c->setPoints(history, range);
     }
     void snapshotReceived(const Snapshot& s) {
-        snapshot = s;
-        haveSnapshot = true;
         ++sampleCount;
         live->setText("●  LIVE  ·  " + s.timestamp.toLocalTime().toString("HH:mm:ss"));
+        live->setToolTip("Last sample received " + s.timestamp.toLocalTime().toString("HH:mm:ss"));
+        meters["dashCpu"]->setValue(s.cpuPercent ? int(*s.cpuPercent * 10) : 0);
+        meters["dashMemory"]->setValue(s.memoryValid && s.memoryTotal ? int(1000. * s.memoryUsed / s.memoryTotal) : 0);
         QStringList errors = s.errors;
         if (!historyError.isEmpty())
             errors.append("History storage: " + historyError);
@@ -1108,18 +962,10 @@ struct MainWindow::Impl {
             coreBars[i]->setValue(valid ? int(s.corePercent[i] * 10) : 0);
             coreBars[i]->setFormat(valid ? QString::number(s.corePercent[i], 'f', 1) + "%" : "—");
         }
-        int keepPid = selectedPid;
         processModel->replace(s.processes);
-        if (keepPid) {
-            for (int row = 0; row < processModel->items.size(); ++row)
-                if (processModel->items[row].pid == keepPid) {
-                    auto idx = proxy->mapFromSource(processModel->index(row, 0));
-                    if (idx.isValid())
-                        processTable->selectRow(idx.row());
-                    break;
-                }
-        }
-        processCount->setText(QString("%1 visible processes").arg(s.processes.size()));
+        if (selectedPid)
+            updateSelection();
+        updateProcessCount();
         processCount->setToolTip(s.notices.join('\n'));
         processNotice->setText("CPU uses 100% per fully occupied core. Memory is resident size. " +
                                s.notices.join(" "));
@@ -1142,6 +988,8 @@ struct MainWindow::Impl {
             else if (!startup && v.mountPoint == "/")
                 startup = &v;
         }
+        meters["dashDisk"]->setValue(startup && startup->totalBytes ?
+            int(1000. * (startup->totalBytes - std::min(startup->totalBytes, startup->availableBytes)) / startup->totalBytes) : 0);
         if (!startup) {
             for (const auto& key : {"dashDisk", "diskTotal", "diskUsed", "diskAvailable"})
                 set(key, "Unavailable");
@@ -1211,10 +1059,13 @@ struct MainWindow::Impl {
         set("sysMemory", bytes(s.physicalMemory));
         set("sysGpu", s.gpuName.isEmpty() ? "Unavailable" : s.gpuName);
         set("sysHost", s.hostname);
-        for (auto* cat : cats)
-            cat->setMotion(motionEnabled && !s.reducedMotion);
+        set("dashModel", s.cpuModel.isEmpty() ? s.model : s.cpuModel);
+        set("dashSystem", QString("macOS %1  ·  %2 memory  ·  %3 cores").arg(QSysInfo::productVersion(), bytes(s.physicalMemory)).arg(s.logicalCores));
+        applyMotion();
     }
     void securityReceived(const QVector<SecurityCheck>& checks) {
+        securityRefresh->setEnabled(true);
+        securityRefresh->setText("Refresh checks");
         for (const auto& c : checks) {
             QString name = c.name;
             if (!securityStatuses.contains(name)) {
@@ -1242,61 +1093,85 @@ struct MainWindow::Impl {
     }
     void build() {
         window->setWindowTitle("Sentinel");
-        window->resize(1280, 900);
+        window->resize(1360, 940);
         window->setMinimumSize(1000, 700);
         window->setUnifiedTitleAndToolBarOnMac(false);
         window->setStyleSheet(R"(
-        QMainWindow,QWidget#root { background:#14161e; color:#e8ebf4; }
-        QWidget { color:#dce0ec; font-family:".AppleSystemUIFont","SF Pro Text","Helvetica Neue"; font-size:13px; }
-        QWidget#sidebar { background:#191b24; border-right:1px solid #2b2e3a; }
-        QWidget#pageBody,QScrollArea,QScrollArea>QWidget>QWidget { background:#14161e; }
-        QFrame#panel { background:#1c1f2a; border:1px solid #2c303d; border-radius:12px; }
-        QFrame#separator { background:#2c303d; border:0; }
+        QMainWindow,QWidget#root { background:#10151f; color:#e9eef9; }
+        QWidget { color:#dce5f4; font-family:".AppleSystemUIFont","SF Pro Text","Helvetica Neue"; font-size:13px; }
+        QWidget#sidebar { background:#0e131d; border-right:1px solid #253044; }
+        QWidget#pageBody,QScrollArea,QScrollArea>QWidget>QWidget { background:#10151f; }
+        QFrame#panel { background:#171e2b; border:1px solid #2a3549; border-radius:14px; }
+        QFrame#welcome { background:qlineargradient(x1:0,y1:0,x2:1,y2:1,stop:0 #202b43,stop:1 #182332); border:1px solid #34415d; border-radius:14px; }
+        QFrame[metric="true"] { background:qlineargradient(x1:0,y1:0,x2:0,y2:1,stop:0 #1c2535,stop:1 #171e2b); }
+        QFrame#separator { background:#253044; border:0; }
         QLabel { background:transparent; border:0; }
-        QLabel#brand { font-size:22px; font-weight:650; letter-spacing:1px; }
-        QLabel#title { font-size:29px; font-weight:650; letter-spacing:-0.7px; }
-        QLabel#subtitle { color:#858da1; font-size:13px; }
-        QLabel#eyebrow { color:#9199ae; font-size:10px; font-weight:600; letter-spacing:1.0px; }
-        QLabel#sectionTitle { font-size:14px; font-weight:600; color:#e7ebf5; }
-        QLabel#value { font-size:30px; font-weight:550; letter-spacing:-0.7px; color:#f2f4fa; }
-        QLabel#heroValue { font-size:25px; font-weight:550; color:#f2f4fa; }
-        QLabel#note { color:#9199ad; font-size:11px; line-height:1.5; }
-        QLabel#rowValue { font-size:12px; font-weight:500; color:#dce1ef; }
-        QLabel#observation { color:#e3e7f2; font-size:19px; font-weight:550; }
-        QLabel#live { color:#81cbb3; font-size:10px; letter-spacing:0.8px; }
-        QLabel#badge { color:#93a2fa; background:#292e43; border-radius:5px; padding:4px 7px; font-size:10px; }
-        QLabel#error { color:#edbd85; background:#302920; border:1px solid #584632; border-radius:7px; padding:10px; font-size:11px; }
-        QPushButton { background:#292e3e; border:1px solid #3a4155; border-radius:7px; padding:9px 13px; color:#dce2f3; }
-        QPushButton:hover { background:#32394d; border-color:#596585; }
-        QPushButton:pressed { background:#202637; }
-        QPushButton:focus { border-color:#8998ff; }
-        QPushButton#nav { text-align:left; padding:8px 13px; border:1px solid transparent; border-radius:7px; background:transparent; color:#9da5b8; font-size:12px; }
-        QPushButton#nav:hover { background:#232735; color:#dce2f3; }
-        QPushButton#nav:checked { background:#2b3047; color:#aab5ff; border-color:#3a415e; }
-        QPushButton#destructive { color:#e0a7aa; }
-        QComboBox { background:#222633; border:1px solid #353b4e; border-radius:7px; padding:8px 13px; min-width:105px; }
+        QLabel#brand { font-size:23px; font-weight:650; letter-spacing:0.4px; color:#f2f5ff; }
+        QLabel#title { font-size:32px; font-weight:650; letter-spacing:-0.8px; color:#f0f4ff; }
+        QLabel#subtitle { color:#9aa9bf; font-size:13px; }
+        QLabel#eyebrow { color:#a0afc7; font-size:10px; font-weight:600; letter-spacing:1.2px; }
+        QLabel#navGroup { color:#74869f; font-size:9px; font-weight:600; letter-spacing:1.5px; padding:8px 13px; }
+        QLabel#sectionTitle { font-size:14px; font-weight:600; color:#e9effb; }
+        QLabel#value { font-size:30px; font-weight:600; letter-spacing:-0.8px; color:#f3f6ff; }
+        QLabel#heroValue { font-size:26px; font-weight:600; color:#f3f6ff; }
+        QLabel#welcomeTitle { font-size:22px; font-weight:600; letter-spacing:-0.4px; color:#eef2ff; }
+        QLabel#note { color:#a0aec3; font-size:11px; }
+        QLabel#micro { color:#8597b2; font-size:9px; letter-spacing:0.8px; }
+        QLabel#rowValue { font-size:12px; font-weight:500; color:#e0e8f6; }
+        QLabel#observation { color:#e8effc; font-size:19px; font-weight:550; }
+        QLabel#live { color:#7fdfc1; background:#142b29; border:1px solid #254b43; border-radius:6px; padding:5px 9px; font-size:10px; letter-spacing:0.6px; }
+        QLabel#privateBadge { color:#92d8c4; font-size:10px; font-weight:500; letter-spacing:0.6px; }
+        QLabel#chartLegend { font-size:10px; letter-spacing:0.5px; }
+        QLabel#badge { color:#b4c0ff; background:#2b3552; border-radius:5px; padding:4px 8px; font-size:10px; }
+        QLabel#error { color:#efc28d; background:#302b24; border:1px solid #63503a; border-radius:8px; padding:11px; font-size:11px; }
+        QPushButton { background:#252f43; border:1px solid #3d4c66; border-radius:8px; padding:10px 14px; color:#e5ecfa; }
+        QPushButton:hover { background:#303d56; border-color:#788cb2; }
+        QPushButton:pressed { background:#1c2639; }
+        QPushButton:focus { border:1px solid #a1b1ff; }
+        QPushButton:disabled { color:#708099; background:#1b2433; border-color:#2a364b; }
+        QPushButton#primary { background:#8598ed; border-color:#a3b2ff; color:#10182c; font-weight:600; }
+        QPushButton#primary:hover { background:#a6b6ff; }
+        QPushButton#primary:pressed { background:#7185dc; }
+        QPushButton#nav { text-align:left; padding:8px 13px; border:1px solid transparent; border-radius:8px; background:transparent; color:#a4b1c7; font-size:12px; }
+        QPushButton#nav:hover { background:#1b2536; color:#eef3ff; }
+        QPushButton#nav:checked { background:qlineargradient(x1:0,y1:0,x2:1,y2:0,stop:0 #303c61,stop:1 #222e49); color:#c4ceff; border-color:#43547f; }
+        QPushButton#nav:focus { border-color:#9aa9ff; }
+        QPushButton#destructive { color:#edb4bc; }
+        QComboBox { background:#1c2637; border:1px solid #35455f; border-radius:8px; padding:9px 14px; min-width:110px; color:#dce5f6; }
+        QComboBox:hover { border-color:#667fa7; }
+        QComboBox:focus { border-color:#9aa9ff; }
         QComboBox::drop-down { border:0; width:22px; }
-        QComboBox QAbstractItemView { background:#242938; selection-background-color:#394360; }
-        QLineEdit { background:#1c202c; border:1px solid #343b4e; border-radius:8px; padding:10px 13px; selection-background-color:#48578d; }
-        QLineEdit:focus { border-color:#8595ef; }
-        QTableView,QTableWidget { background:#1b1e29; border:1px solid #2c3241; border-radius:8px; selection-background-color:#303a55; selection-color:#e9edfa; outline:0; font-size:12px; }
-        QTableView::item { padding:6px 10px; border-bottom:1px solid #282d3a; }
-        QTableView::item:selected { background:#303a55; }
-        QHeaderView::section { background:#222633; color:#8f98ae; border:0; border-bottom:1px solid #343b4a; padding:10px; font-size:10px; }
-        QTableCornerButton::section { background:#222633; border:0; }
-        QTextEdit { background:transparent; border:0; color:#aeb7cc; font-size:12px; selection-background-color:#48578d; }
-        QProgressBar { background:#2b3041; border:0; border-radius:4px; color:#e5e9f5; font-size:10px; text-align:center; }
-        QProgressBar::chunk { background:#7188d8; border-radius:4px; }
-        QCheckBox { spacing:9px; padding:5px 0; }
-        QCheckBox::indicator { width:16px; height:16px; background:#252b3a; border:1px solid #4b5671; border-radius:4px; }
-        QCheckBox::indicator:checked { background:#7c8de3; image:url(:/check.svg); }
-        QScrollBar:vertical { background:transparent; width:8px; margin:0; }
-        QScrollBar::handle:vertical { background:#3b4255; border-radius:4px; min-height:30px; }
+        QComboBox QAbstractItemView { background:#202c40; color:#e7edfc; border:1px solid #435779; selection-background-color:#3b4b71; padding:5px; outline:0; }
+        QLineEdit { background:#151e2d; border:1px solid #35455e; border-radius:9px; padding:11px 14px; selection-background-color:#485e94; }
+        QLineEdit:focus { border-color:#9aa9ff; }
+        QTableView,QTableWidget { background:#161e2c; alternate-background-color:#1a2434; border:1px solid #2c3b53; border-radius:9px; selection-background-color:#35466b; selection-color:#f1f5ff; outline:0; font-size:12px; }
+        QTableView::item { padding:7px 11px; border-bottom:1px solid #242f43; }
+        QTableView::item:selected { background:#35466b; }
+        QTableView::item:hover { background:#26344e; }
+        QHeaderView::section { background:#1d293c; color:#a7b6cd; border:0; border-bottom:1px solid #364963; padding:11px; font-size:10px; font-weight:600; }
+        QTableCornerButton::section { background:#1d293c; border:0; }
+        QTextEdit { background:transparent; border:0; color:#b6c5dc; font-size:12px; selection-background-color:#485e94; }
+        QProgressBar { background:#2a374e; border:0; border-radius:4px; color:#edf2ff; font-size:10px; text-align:center; }
+        QProgressBar::chunk { background:#8196e1; border-radius:4px; }
+        QProgressBar#meter { background:#2a354a; border-radius:2px; }
+        QProgressBar#meter::chunk { background:#9aa9ff; border-radius:2px; }
+        QProgressBar#meter[tone="teal"]::chunk { background:#65d9c0; }
+        QProgressBar#meter[tone="gold"]::chunk { background:#edc489; }
+        QCheckBox { spacing:10px; padding:6px 0; }
+        QCheckBox::indicator { width:17px; height:17px; background:#1c293d; border:1px solid #536c92; border-radius:5px; }
+        QCheckBox::indicator:checked { background:#91a3f4; image:url(:/check.svg); }
+        QCheckBox:focus { color:#c1ccff; }
+        QScrollBar:vertical { background:transparent; width:7px; margin:2px 0; }
+        QScrollBar::handle:vertical { background:#3b4b65; border-radius:3px; min-height:36px; }
+        QScrollBar::handle:vertical:hover { background:#61779b; }
         QScrollBar::add-line:vertical,QScrollBar::sub-line:vertical { height:0; }
         QScrollBar::add-page:vertical,QScrollBar::sub-page:vertical { background:transparent; }
-        QToolTip { background:#292e40; border:1px solid #47516a; color:#e1e6f3; padding:5px; }
-        QMessageBox,QDialog { background:#202431; }
-    )");
+        QScrollBar:horizontal { background:#141e2d; height:7px; margin:0; }
+        QScrollBar::handle:horizontal { background:#3b4b65; border-radius:3px; min-width:36px; }
+        QScrollBar::add-line:horizontal,QScrollBar::sub-line:horizontal { width:0; }
+        QScrollBar::add-page:horizontal,QScrollBar::sub-page:horizontal { background:transparent; }
+        QToolTip { background:#26354e; color:#ecf2ff; border:1px solid #566f96; padding:6px; }
+        )");
         auto* root = new QWidget;
         root->setObjectName("root");
         auto* rl = new QHBoxLayout(root);
@@ -1323,20 +1198,26 @@ struct MainWindow::Impl {
         sl->addLayout(brandRow);
         auto* brandNote = text("YOUR MAC, IN FOCUS", "eyebrow");
         brandCaption = brandNote;
-        brandNote->setContentsMargins(8, 0, 0, 20);
+        brandNote->setContentsMargins(8, 0, 0, 18);
         sl->addWidget(brandNote);
+        sl->addWidget(text("WORKSPACE", "navGroup"));
         const QStringList names = {"Dashboard",          "CPU",     "Memory",  "GPU",
                                    "Processes",          "Network", "Storage", "Security Center",
                                    "System Information", "Settings"};
         for (int i = 0; i < 9; ++i) {
             if (i == 7) {
                 sl->addSpacing(14);
-                sl->addWidget(text("SYSTEM", "eyebrow"));
+                sl->addWidget(text("SYSTEM", "navGroup"));
                 sl->addSpacing(4);
             }
             auto* b = new QPushButton(names[i]);
             b->setObjectName("nav");
             b->setCheckable(true);
+            b->setAccessibleName(names[i]);
+            b->setCursor(Qt::PointingHandCursor);
+            auto* shortcut = new QShortcut(QKeySequence(QString("Ctrl+%1").arg(i + 1)), window);
+            connect(shortcut, &QShortcut::activated, window, [this, i] { select(i); });
+            b->setToolTip(names[i] + "  " + shortcut->key().toString(QKeySequence::NativeText));
             b->setIcon(icon(i));
             b->setIconSize(QSize(18, 18));
             b->setMinimumHeight(37);
@@ -1357,17 +1238,19 @@ struct MainWindow::Impl {
         auto* settingsButton = new QPushButton("Settings");
         settingsButton->setObjectName("nav");
         settingsButton->setCheckable(true);
+        settingsButton->setAccessibleName("Settings");
+        settingsButton->setCursor(Qt::PointingHandCursor);
         settingsButton->setIcon(icon(9));
         settingsButton->setIconSize(QSize(18, 18));
         nav.append(settingsButton);
         sl->addWidget(settingsButton);
         connect(settingsButton, &QPushButton::clicked, window, [this] { select(9); });
-        auto* version = text("SENTINEL  1.0", "eyebrow");
+        auto* version = text("LOCAL FIRST  /  SENTINEL " + QCoreApplication::applicationVersion(), "micro");
         version->setContentsMargins(13, 9, 0, 0);
         sl->addWidget(version);
         split->addWidget(sidebar);
         auto* content = new QWidget;
-        auto* cl = column(content, 27);
+        auto* cl = column(content, 30);
         cl->setSpacing(20);
         auto* header = new QHBoxLayout;
         auto* titles = new QVBoxLayout;
@@ -1381,6 +1264,7 @@ struct MainWindow::Impl {
         auto* tools = new QVBoxLayout;
         tools->setSpacing(10);
         live = text("●  CONNECTING", "live");
+        live->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
         tools->addWidget(live, 0, Qt::AlignRight);
         rangeChoice = new QComboBox;
         rangeChoice->addItem("Last 5 minutes", 300);
@@ -1395,11 +1279,12 @@ struct MainWindow::Impl {
         errorLabel->hide();
         cl->addWidget(errorLabel);
         stack = new QStackedWidget;
+        stack->installEventFilter(window);
         cl->addWidget(stack, 1);
         split->addWidget(content);
         split->setStretchFactor(0, 0);
         split->setStretchFactor(1, 1);
-        split->setSizes({218, 1062});
+        split->setSizes({220, 1140});
         window->setCentralWidget(root);
         buildDashboard();
         buildCpu();
@@ -1422,11 +1307,15 @@ struct MainWindow::Impl {
         connect(service, &MonitorService::systemInfoReady, window,
                 [this](const SystemInfo& s) { infoReceived(s); });
         connect(service, &MonitorService::historyReady, window, [this](const QVector<HistoryPoint>& p) {
+            // A database query must not erase the latest, not-yet-persisted samples.
+            const qint64 newest = p.isEmpty() ? 0 : p.last().timestampMs;
+            const qint64 cutoff = QDateTime::currentMSecsSinceEpoch() - qint64(range) * 1000;
+            QVector<HistoryPoint> livePoints;
+            for (const auto& point : history)
+                if (point.bucketWidthMs == 0 && point.timestampMs > newest && point.timestampMs >= cutoff)
+                    livePoints.append(point);
             history = p;
-            if (haveSnapshot &&
-                snapshot.timestamp.toMSecsSinceEpoch() >
-                    (history.isEmpty() ? 0 : history.last().timestampMs)) { /* next live sample will append */
-            }
+            history += livePoints;
             updateCharts();
         });
         connect(service, &MonitorService::securityReady, window,
@@ -1459,9 +1348,11 @@ struct MainWindow::Impl {
             updateCharts();
         });
         adjustSidebar(window->height());
-        QTimer::singleShot(0, window, [this] {
-            service->requestHistory(range);
-            service->requestSecurity();
+        auto* find = new QShortcut(QKeySequence::Find, window);
+        connect(find, &QShortcut::activated, window, [this] {
+            select(4);
+            processSearch->setFocus();
+            processSearch->selectAll();
         });
     }
 };
@@ -1472,6 +1363,11 @@ MainWindow::MainWindow(MonitorService* service, QWidget* parent)
 MainWindow::~MainWindow() = default;
 void MainWindow::selectPage(int index) {
     d->select(index);
+}
+bool MainWindow::eventFilter(QObject* watched, QEvent* event) {
+    if (d && watched == d->stack && event->type() == QEvent::Resize)
+        d->adjustSidebar(height());
+    return QMainWindow::eventFilter(watched, event);
 }
 void MainWindow::resizeEvent(QResizeEvent* event) {
     QMainWindow::resizeEvent(event);

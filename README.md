@@ -4,13 +4,15 @@
 
 A native system monitor for Apple Silicon Macs. Sentinel brings live CPU, memory, process, network, storage, and security configuration information into a quiet dark interface, with an original black cat keeping watch in the sidebar.
 
+The interface includes responsive overview cards, color-coded activity graphs, keyboard navigation, and a process table that keeps its selection as live measurements change. Press **⌘1–⌘9** to move between pages, **⌘F** to search processes, or **⌘,** for Settings. Animation follows the app preference and macOS Reduce Motion; inactive and hidden charts pause their animation timers.
+
 The monitoring engine is C++20 and Objective-C++. The interface uses Qt 6 Widgets with vector rendering. Measurements come from public macOS APIs; the application does not substitute generated values when a measurement is unavailable.
 
 ![Sentinel dashboard](docs/screenshots/dashboard.png)
 
 ## Download
 
-[Download the v1.0.0 preview for Apple Silicon](https://github.com/Unknown-George/Sentinel/releases/tag/v1.0.0). The release includes the standalone app, source, checksums, and corresponding Qt sources. This initial preview is ad-hoc signed and is not notarized; clean-machine testing on macOS 14.0 remains outstanding.
+[Download v1.1.0 for Apple Silicon](https://github.com/Unknown-George/Sentinel/releases/tag/v1.1.0). This release includes the refreshed interface, standalone app, source, checksums, and corresponding Qt sources. The app is ad-hoc signed and is not notarized; clean-machine testing on macOS 14.0 remains outstanding.
 
 ## What it does
 
@@ -101,7 +103,7 @@ GitHub Actions builds ARM64 on `macos-15`, runs the unit tests and an offscreen 
 
 See [ARCHITECTURE.md](docs/ARCHITECTURE.md) for ownership and data flow, [METRICS.md](docs/METRICS.md) for formulas and semantics, [API-SOURCES.md](docs/API-SOURCES.md) for primary API references, and [VALIDATION.md](docs/VALIDATION.md) for performed checks and remaining release checks.
 
-The supplied build passed all 12 unit tests and the live native smoke checks recorded in [VALIDATION.md](docs/VALIDATION.md). GoogleTest covers counter reset/zero-time behavior, normalized CPU calculations, process CPU core equivalents, SQLite round trips, null measurements, chronological bounded history queries, retention, deletion, database failures, and refusal to alter a newer database schema. Live smoke testing exercises the real collector; it does not install fixture data into the dashboard:
+The supplied build passed all 18 unit tests and the live native smoke checks recorded in [VALIDATION.md](docs/VALIDATION.md). GoogleTest covers counter reset/zero-time behavior, normalized CPU calculations, process CPU core equivalents, SQLite round trips, null measurements, chronological bounded history queries, retention, deletion, database failures, refusal to alter a newer database schema, and stable process selection/filtering during live updates. Live smoke testing exercises the real collector; it does not install fixture data into the dashboard:
 
 ```sh
 QT_QPA_PLATFORM=offscreen build/Sentinel.app/Contents/MacOS/Sentinel --smoke-test

@@ -23,6 +23,10 @@ macOS public APIs ── Collector ── Snapshot ── MonitorWorker
 
 `ui/` owns navigation, table presentation, bounded graph buffers, user preferences, and the original vector mascot. Native macOS window controls remain in the platform titlebar. Reduced-motion preferences disable decorative animation. Charts label time and units; historical bucket values represent averages, not reconstructed individual measurements.
 
+`ui/ProcessModel` updates process rows by PID and start time, preserving persistent indexes and proxy selections across inserts, exits, and numeric reordering. PID reuse removes the old row. Only changed column spans emit data updates; the inspector preserves selected text and its scroll position during refresh.
+
+`ui/HistoryChart` renders exact recorded polylines with separate fills for contiguous segments. Optional short-range animation advances the time axis without interpolating measurements. Hidden or inactive charts stop their timers, and day views redraw only on data updates. `ui/CatWidget` uses elapsed-time animation with the same visibility and reduced-motion controls. Navigation uses a short opacity transition and dashboard cards reflow according to the available viewport width.
+
 ## Extending a metric
 
 Add a value and validity representation to the shared types, implement it in the platform collector, document the API/formula and permissions, then add the UI. Only persist aggregate values that have an explicit retention and privacy purpose. Add a test for any nontrivial calculation or missing/reset behavior. Do not turn an API failure into a zero or derive hardware counters from undocumented IOKit properties.
