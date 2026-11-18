@@ -803,7 +803,8 @@ struct MainWindow::Impl {
         });
         hl->addLayout(buttons);
         l->addWidget(historyPanel);
-        l->addWidget(note("Sentinel 1.0 • C++20 / Qt 6 • Designed for Apple Silicon and macOS 14 or later."));
+        l->addWidget(note(QString("Sentinel %1 • C++20 / Qt 6 • Designed for Apple Silicon and macOS 14 or later.")
+                              .arg(QCoreApplication::applicationVersion())));
         l->addStretch();
     }
     void adjustSidebar(int height) {
@@ -1244,7 +1245,7 @@ struct MainWindow::Impl {
         nav.append(settingsButton);
         sl->addWidget(settingsButton);
         connect(settingsButton, &QPushButton::clicked, window, [this] { select(9); });
-        auto* version = text("LOCAL FIRST  /  SENTINEL 1.0", "micro");
+        auto* version = text("LOCAL FIRST  /  SENTINEL " + QCoreApplication::applicationVersion(), "micro");
         version->setContentsMargins(13, 9, 0, 0);
         sl->addWidget(version);
         split->addWidget(sidebar);

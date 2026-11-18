@@ -5,9 +5,10 @@ set -euo pipefail
 project_dir="$(cd "$(dirname "$0")/.." && pwd)"
 build_dir="${1:-$project_dir/build}"
 output_dir="${2:-$project_dir/dist}"
-version="${SENTINEL_VERSION:-1.0.0}"
 app_source="$build_dir/Sentinel.app"
 [[ -d "$app_source" ]] || { echo "Missing $app_source; build Sentinel first." >&2; exit 1; }
+bundle_version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app_source/Contents/Info.plist")"
+version="${SENTINEL_VERSION:-$bundle_version}"
 lipo "$app_source/Contents/MacOS/Sentinel" -verify_arch arm64
 if [[ -n "${NOTARY_PROFILE:-}" && -z "${DEVELOPER_ID:-}" ]]; then
     echo "NOTARY_PROFILE requires DEVELOPER_ID." >&2

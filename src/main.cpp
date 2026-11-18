@@ -118,7 +118,7 @@ int main(int argc, char* argv[]) {
     QCoreApplication::setOrganizationName("Sentinel");
     QCoreApplication::setOrganizationDomain("sentinel.app");
     QCoreApplication::setApplicationName("Sentinel");
-    QCoreApplication::setApplicationVersion("1.0.0");
+    QCoreApplication::setApplicationVersion(SENTINEL_VERSION);
     app.setStyle("Fusion");
 #if QT_VERSION >= QT_VERSION_CHECK(6, 8, 0)
     app.styleHints()->setColorScheme(Qt::ColorScheme::Dark);
@@ -203,8 +203,9 @@ int main(int argc, char* argv[]) {
     about->setMenuRole(QAction::AboutRole);
     QObject::connect(about, &QAction::triggered, &window, [&window] {
         QMessageBox::about(&window, "Sentinel",
-                           "Sentinel 1.0.0\n\nSystem visibility for Apple Silicon.\n"
-                           "Built with C++20 and Qt 6.\n\nMIT License • Sentinel contributors");
+                           QString("Sentinel %1\n\nSystem visibility for Apple Silicon.\n"
+                                   "Built with C++20 and Qt 6.\n\nMIT License • Sentinel contributors")
+                               .arg(QCoreApplication::applicationVersion()));
     });
     auto* preferences = appMenu->addAction("Settings…");
     preferences->setMenuRole(QAction::PreferencesRole);
