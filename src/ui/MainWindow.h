@@ -14,6 +14,7 @@ class MainWindow final : public QMainWindow {
 
   protected:
     void resizeEvent(QResizeEvent* event) override;
+    bool eventFilter(QObject* watched, QEvent* event) override;
 
   private:
     struct Impl;

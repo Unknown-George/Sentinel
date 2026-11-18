@@ -2,8 +2,11 @@
 #include "ui/MainWindow.h"
 #include <QApplication>
 #include <QCommandLineParser>
+#include <QComboBox>
 #include <QDir>
+#include <QEventLoop>
 #include <QFile>
+#include <QFrame>
 #include <QIcon>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -12,8 +15,11 @@
 #include <QMenuBar>
 #include <QMessageBox>
 #include <QPainter>
+#include <QPalette>
 #include <QSettings>
 #include <QStandardPaths>
+#include <QStackedWidget>
+#include <QStyleHints>
 #include <QSvgRenderer>
 #include <QTableView>
 #include <QTemporaryDir>
@@ -55,6 +61,57 @@ bool checkProcessInteractions(QWidget& window) {
     table->sortByColumn(2, Qt::DescendingOrder);
     return excludesUnmatched && foundSelf && sorted;
 }
+bool checkResponsiveNavigation(sentinel::MainWindow& window) {
+    auto* stack = window.findChild<QStackedWidget*>();
+    QComboBox* range = nullptr;
+    for (auto* choice : window.findChildren<QComboBox*>())
+        if (choice->accessibleName() == "Chart time range")
+            range = choice;
+    if (!stack || !range)
+        return false;
+    const QSize originalSize = window.size();
+    const int originalPage = stack->currentIndex();
+    auto settleLayouts = [] {
+        // Resizing the viewport may queue the responsive layout update.
+        for (int pass = 0; pass < 2; ++pass) {
+            QCoreApplication::sendPostedEvents(nullptr, QEvent::LayoutRequest);
+            QApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
+        }
+    };
+    window.navigateTo(1);
+    const bool cpuHasRange = range->isVisible();
+    window.navigateTo(3);
+    const bool gpuHidesRange = !range->isVisible();
+    window.navigateTo(0);
+    auto cardsHaveColumns = [&](int width, int columns) {
+        window.resize(width, 900);
+        settleLayouts();
+        QVector<QPoint> positions;
+        for (auto* frame : stack->widget(0)->findChildren<QFrame*>())
+            if (frame->property("metric").toBool())
+                positions.append(frame->mapTo(stack->widget(0), QPoint()));
+        if (positions.size() != 4)
+            return false;
+        std::sort(positions.begin(), positions.end(), [](const QPoint& a, const QPoint& b) {
+            return a.y() == b.y() ? a.x() < b.x() : a.y() < b.y();
+        });
+        for (int i = 0; i < positions.size(); ++i) {
+            if (positions[i].y() != positions[(i / columns) * columns].y())
+                return false;
+            if (i % columns && positions[i].x() <= positions[i - 1].x())
+                return false;
+            if (i >= columns && positions[i].y() <= positions[i - columns].y())
+                return false;
+        }
+        return true;
+    };
+    const bool compactCards = cardsHaveColumns(1000, 2);
+    const bool wideCards = cardsHaveColumns(1360, 4);
+    window.resize(originalSize);
+    window.navigateTo(originalPage);
+    settleLayouts();
+    return cpuHasRange && gpuHidesRange && compactCards && wideCards;
+}
 } // namespace
 int main(int argc, char* argv[]) {
     QApplication app(argc, argv);
@@ -63,6 +120,22 @@ int main(int argc, char* argv[]) {
     QCoreApplication::setApplicationName("Sentinel");
     QCoreApplication::setApplicationVersion("1.0.0");
     app.setStyle("Fusion");
+#if QT_VERSION >= QT_VERSION_CHECK(6, 8, 0)
+    app.styleHints()->setColorScheme(Qt::ColorScheme::Dark);
+#endif
+    QPalette palette;
+    palette.setColor(QPalette::Window, QColor("#10151f"));
+    palette.setColor(QPalette::WindowText, QColor("#e9eef9"));
+    palette.setColor(QPalette::Base, QColor("#161e2c"));
+    palette.setColor(QPalette::AlternateBase, QColor("#1a2434"));
+    palette.setColor(QPalette::Text, QColor("#dce5f4"));
+    palette.setColor(QPalette::Button, QColor("#252f43"));
+    palette.setColor(QPalette::ButtonText, QColor("#e5ecfa"));
+    palette.setColor(QPalette::Highlight, QColor("#35466b"));
+    palette.setColor(QPalette::HighlightedText, QColor("#f1f5ff"));
+    palette.setColor(QPalette::Disabled, QPalette::Text, QColor("#708099"));
+    palette.setColor(QPalette::Disabled, QPalette::ButtonText, QColor("#708099"));
+    app.setPalette(palette);
     app.setWindowIcon(QIcon(":/app-icon.svg"));
     QCommandLineParser parser;
     parser.setApplicationDescription("Sentinel — public-API monitoring for Apple Silicon.");
@@ -173,14 +246,17 @@ int main(int argc, char* argv[]) {
         auto page = std::make_shared<int>(0);
         auto capture = std::make_shared<std::function<void()>>();
         auto uiChecksPassed = std::make_shared<bool>(false);
+        auto responsiveChecksPassed = std::make_shared<bool>(false);
         auto captureOk = std::make_shared<bool>(true);
         const QString captureDir = parser.value("capture-dir");
         if (!captureDir.isEmpty())
             *captureOk = QDir().mkpath(captureDir);
-        *capture = [&, page, capture, captureDir, uiChecksPassed, captureOk] {
+        *capture = [&, page, capture, captureDir, uiChecksPassed, responsiveChecksPassed, captureOk] {
             if (*page < 10) {
-                if (*page == 0)
+                if (*page == 0) {
                     *uiChecksPassed = checkProcessInteractions(window);
+                    *responsiveChecksPassed = checkResponsiveNavigation(window);
+                }
                 window.navigateTo(*page);
                 QTimer::singleShot(150, &app, [&, page, capture, captureDir, captureOk] {
                     if (!captureDir.isEmpty()) {
@@ -222,12 +298,13 @@ int main(int argc, char* argv[]) {
             report["securityChecks"] = security.size();
             report["pagesVisited"] = *page;
             report["processSearchAndNumericSortPassed"] = *uiChecksPassed;
+            report["responsiveLayoutAndNavigationPassed"] = *responsiveChecksPassed;
             report["captureSucceeded"] = *captureOk;
             report["storageErrors"] = QJsonArray::fromStringList(storageErrors);
             report["collectionNotes"] = QJsonArray::fromStringList(latest.errors + latest.notices);
             bool passed = count >= 3 && latest.cpuPercent.has_value() && latest.memoryValid &&
                           latest.memoryTotal > 0 && !latest.volumes.isEmpty() && storageErrors.isEmpty() &&
-                          *uiChecksPassed && *captureOk;
+                          *uiChecksPassed && *responsiveChecksPassed && *captureOk;
             report["passed"] = passed;
             if (!captureDir.isEmpty() && !writeJson(captureDir + "/smoke-report.json", report)) {
                 passed = false;

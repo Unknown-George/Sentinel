@@ -4,6 +4,8 @@
 
 A native system monitor for Apple Silicon Macs. Sentinel brings live CPU, memory, process, network, storage, and security configuration information into a quiet dark interface, with an original black cat keeping watch in the sidebar.
 
+The interface includes responsive overview cards, color-coded activity graphs, keyboard navigation, and a process table that keeps its selection as live measurements change. Press **⌘1–⌘9** to move between pages, **⌘F** to search processes, or **⌘,** for Settings. Animation follows the app preference and macOS Reduce Motion; inactive and hidden charts pause their animation timers.
+
 The monitoring engine is C++20 and Objective-C++. The interface uses Qt 6 Widgets with vector rendering. Measurements come from public macOS APIs; the application does not substitute generated values when a measurement is unavailable.
 
 ![Sentinel dashboard](docs/screenshots/dashboard.png)
